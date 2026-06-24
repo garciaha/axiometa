@@ -277,20 +277,71 @@ void awardBonusBuckets() {
   }
 }
 
-// Returns true exactly once per physical press (HIGH->LOW edge)
-bool buttonPressed() {
-  bool b = digitalRead(BTN_PIN);
-  bool pressed = (b == LOW && lastButton == HIGH);
-  lastButton = b;
-  return pressed;
+// ---- Button helpers (driven by updateInputs() run once per loop) ----
+bool g_buttonPressed = false;
+bool g_buttonDoubleClicked = false;
+bool g_encButtonPressed = false;
+bool g_encButtonDoubleClicked = false;
+
+void updateInputs() {
+  static bool lastBtn = HIGH;
+  static bool lastEnc = HIGH;
+  static unsigned long lastBtnTime = 0;
+  static unsigned long lastEncTime = 0;
+  const unsigned long DOUBLE_CLICK_WINDOW = 350;
+  
+  bool btn = digitalRead(BTN_PIN);
+  bool enc = digitalRead(ENC_BTN);
+  unsigned long now = millis();
+  
+  g_buttonPressed = (btn == LOW && lastBtn == HIGH);
+  g_encButtonPressed = (enc == LOW && lastEnc == HIGH);
+  
+  g_buttonDoubleClicked = false;
+  g_encButtonDoubleClicked = false;
+  
+  if (g_buttonPressed) {
+    if (now - lastBtnTime < DOUBLE_CLICK_WINDOW && now - lastBtnTime > 50) {
+      g_buttonDoubleClicked = true;
+      lastBtnTime = 0;
+    } else {
+      lastBtnTime = now;
+    }
+  }
+  
+  if (g_encButtonPressed) {
+    if (now - lastEncTime < DOUBLE_CLICK_WINDOW && now - lastEncTime > 50) {
+      g_encButtonDoubleClicked = true;
+      lastEncTime = 0;
+    } else {
+      lastEncTime = now;
+    }
+  }
+  
+  lastBtn = btn;
+  lastEnc = enc;
 }
 
-// Rotary-encoder push switch: true once per press (HIGH->LOW edge)
+bool buttonPressed() {
+  return g_buttonPressed;
+}
+
 bool encButtonPressed() {
-  bool b = digitalRead(ENC_BTN);
-  bool pressed = (b == LOW && lastEncBtn == HIGH);
-  lastEncBtn = b;
-  return pressed;
+  return g_encButtonPressed;
+}
+
+void dumpScreenshot() {
+  // Clear any incoming bytes in serial buffer
+  while (Serial.available()) Serial.read();
+  
+  Serial.println("---START_SCREENSHOT---");
+  uint16_t* buf = canvas.getBuffer();
+  for (int i = 0; i < W * H; i++) {
+    Serial.write((uint8_t)(buf[i] >> 8));
+    Serial.write((uint8_t)(buf[i] & 0xFF));
+  }
+  Serial.println("---END_SCREENSHOT---");
+  Serial.flush();
 }
 
 void resetGame() {
@@ -673,15 +724,15 @@ void drawCentered(const char* s, int y, int size, uint16_t color, bool bold) {
   int w = (int)strlen(s) * 6 * size;
   int x = (W - w) / 2;
   if (x < 0) x = 0;
-  tft.setTextSize(size);
-  tft.setTextColor(color);
-  tft.setCursor(x, y);
-  tft.print(s);
-  if (bold) { tft.setCursor(x + 1, y); tft.print(s); }
+  canvas.setTextSize(size);
+  canvas.setTextColor(color);
+  canvas.setCursor(x, y);
+  canvas.print(s);
+  if (bold) { canvas.setCursor(x + 1, y); canvas.print(s); }
 }
 
 void drawTitle() {
-  tft.fillScreen(COL_BG);
+  canvas.fillScreen(COL_BG);
 
   // Main title
   drawCentered("KABOOM", 24, 2, COL_TITLE, true);
@@ -694,18 +745,19 @@ void drawTitle() {
   drawCentered("By L. Kaplan", 90, 1, COL_BOMBHI, false);
   drawCentered("Port by HL2J", 102, 1, COL_BOMBHI, false);
   // Bold just the "2" in HL2J (string is 12 chars wide -> x=4, '2' at index 10)
-  tft.setTextSize(1);
-  tft.setTextColor(COL_BOMBHI);
-  tft.setCursor(4 + 10 * 6, 102);     tft.print("2");
-  tft.setCursor(4 + 10 * 6 + 1, 102); tft.print("2");
+  canvas.setTextSize(1);
+  canvas.setTextColor(COL_BOMBHI);
+  canvas.setCursor(4 + 10 * 6, 102);     canvas.print("2");
+  canvas.setCursor(4 + 10 * 6 + 1, 102); canvas.print("2");
 
   // Start prompt anchored near the bottom
   drawCentered("Press button", 130, 1, COL_ACCENT, false);
   drawCentered("to start", 142, 1, COL_ACCENT, false);
+  tft.drawRGBBitmap(0, 0, canvas.getBuffer(), W, H);
 }
 
 void drawWaveClear() {
-  tft.fillScreen(COL_BG);
+  canvas.fillScreen(COL_BG);
   drawCentered("WAVE", 26, 2, COL_TITLE, true);
   drawCentered("CLEAR", 48, 2, COL_TITLE, true);
 
@@ -721,10 +773,11 @@ void drawWaveClear() {
 
   drawCentered("Press", 134, 1, COL_ACCENT, false);
   drawCentered("button", 146, 1, COL_ACCENT, false);
+  tft.drawRGBBitmap(0, 0, canvas.getBuffer(), W, H);
 }
 
 void drawGameOver() {
-  tft.fillScreen(COL_BG);
+  canvas.fillScreen(COL_BG);
   drawCentered("GAME", 26, 2, COL_TITLE, true);
   drawCentered("OVER", 48, 2, COL_TITLE, true);
 
@@ -736,6 +789,7 @@ void drawGameOver() {
   drawCentered("Press", 122, 1, COL_ACCENT, false);
   drawCentered("button", 134, 1, COL_ACCENT, false);
   drawCentered("to play", 146, 1, COL_ACCENT, false);
+  tft.drawRGBBitmap(0, 0, canvas.getBuffer(), W, H);
 }
 
 void setup() {
@@ -775,6 +829,11 @@ void setup() {
 }
 
 void loop() {
+  updateInputs();          // update all button and click states
+  if (g_buttonDoubleClicked || g_encButtonDoubleClicked) {
+    dumpScreenshot();
+  }
+
   encoder.tick();          // MUST run every iteration
   updateSound();
 

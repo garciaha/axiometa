@@ -142,19 +142,71 @@ void sfxGameOver() { static int f[] = {392, 330, 262, 196};  static int d[] = {1
 void sfxStart()    { static int f[] = {659, 988};            static int d[] = {80, 140};             playSeq(f, d, 2); }
 void sfxLaunch()   { static int f[] = {784, 1047};           static int d[] = {60, 90};              playSeq(f, d, 2); }
 
-// ---- Button helpers (HIGH->LOW edge, fires once per physical press) ----
+// ---- Button helpers (driven by updateInputs() run once per loop) ----
+bool g_buttonPressed = false;
+bool g_buttonDoubleClicked = false;
+bool g_encButtonPressed = false;
+bool g_encButtonDoubleClicked = false;
+
+void updateInputs() {
+  static bool lastBtn = HIGH;
+  static bool lastEnc = HIGH;
+  static unsigned long lastBtnTime = 0;
+  static unsigned long lastEncTime = 0;
+  const unsigned long DOUBLE_CLICK_WINDOW = 350;
+  
+  bool btn = digitalRead(BTN_PIN);
+  bool enc = digitalRead(ENC_BTN);
+  unsigned long now = millis();
+  
+  g_buttonPressed = (btn == LOW && lastBtn == HIGH);
+  g_encButtonPressed = (enc == LOW && lastEnc == HIGH);
+  
+  g_buttonDoubleClicked = false;
+  g_encButtonDoubleClicked = false;
+  
+  if (g_buttonPressed) {
+    if (now - lastBtnTime < DOUBLE_CLICK_WINDOW && now - lastBtnTime > 50) {
+      g_buttonDoubleClicked = true;
+      lastBtnTime = 0;
+    } else {
+      lastBtnTime = now;
+    }
+  }
+  
+  if (g_encButtonPressed) {
+    if (now - lastEncTime < DOUBLE_CLICK_WINDOW && now - lastEncTime > 50) {
+      g_encButtonDoubleClicked = true;
+      lastEncTime = 0;
+    } else {
+      lastEncTime = now;
+    }
+  }
+  
+  lastBtn = btn;
+  lastEnc = enc;
+}
+
 bool buttonPressed() {
-  bool b = digitalRead(BTN_PIN);
-  bool pressed = (b == LOW && lastButton == HIGH);
-  lastButton = b;
-  return pressed;
+  return g_buttonPressed;
 }
 
 bool encButtonPressed() {
-  bool b = digitalRead(ENC_BTN);
-  bool pressed = (b == LOW && lastEncBtn == HIGH);
-  lastEncBtn = b;
-  return pressed;
+  return g_encButtonPressed;
+}
+
+void dumpScreenshot() {
+  // Clear any incoming bytes in serial buffer
+  while (Serial.available()) Serial.read();
+  
+  Serial.println("---START_SCREENSHOT---");
+  uint16_t* buf = canvas.getBuffer();
+  for (int i = 0; i < W * H; i++) {
+    Serial.write((uint8_t)(buf[i] >> 8));
+    Serial.write((uint8_t)(buf[i] & 0xFF));
+  }
+  Serial.println("---END_SCREENSHOT---");
+  Serial.flush();
 }
 
 // ---- Brick-break particles ----
@@ -420,11 +472,11 @@ void drawCentered(const char* s, int y, int size, uint16_t color, bool bold) {
   int w = (int)strlen(s) * 6 * size;
   int x = (W - w) / 2;
   if (x < 0) x = 0;
-  tft.setTextSize(size);
-  tft.setTextColor(color);
-  tft.setCursor(x, y);
-  tft.print(s);
-  if (bold) { tft.setCursor(x + 1, y); tft.print(s); }
+  canvas.setTextSize(size);
+  canvas.setTextColor(color);
+  canvas.setCursor(x, y);
+  canvas.print(s);
+  if (bold) { canvas.setCursor(x + 1, y); canvas.print(s); }
 }
 
 void drawHUD() {
@@ -484,7 +536,7 @@ void drawPlaying() {
 
 void drawTitle() {
   // W=80. size-2 char=12px wide; "BREAKOUT" at size 2 = 96px > 80, so split.
-  tft.fillScreen(COL_BG);
+  canvas.fillScreen(COL_BG);
   drawCentered("BREAK",         10, 2, COL_TITLE,  true);   // 5*12=60px
   drawCentered("OUT",           28, 2, COL_TITLE,  true);   // 3*12=36px
   drawCentered("Smash the",     54, 1, COL_WHITE,  false);  // 9*6=54px
@@ -494,10 +546,11 @@ void drawTitle() {
   drawCentered("Turn: move",   115, 1, COL_WHITE,  false);  // 10*6=60px
   drawCentered("Btn: launch",  126, 1, COL_WHITE,  false);  // 11*6=66px
   drawCentered("Press to play",147, 1, COL_ACCENT, false);  // 13*6=78px
+  tft.drawRGBBitmap(0, 0, canvas.getBuffer(), W, H);
 }
 
 void drawLevelClear() {
-  tft.fillScreen(COL_BG);
+  canvas.fillScreen(COL_BG);
   drawCentered("LEVEL",        30, 2, COL_TITLE,  true);   // 5*12=60px
   drawCentered("CLEAR",        52, 2, COL_TITLE,  true);   // 5*12=60px
   char buf[12];
@@ -506,10 +559,11 @@ void drawLevelClear() {
   drawCentered(buf,            96, 2, COL_ACCENT, true);
   drawCentered("Press button", 134, 1, COL_ACCENT, false); // 12*6=72px
   drawCentered("next level",   146, 1, COL_ACCENT, false); // 10*6=60px
+  tft.drawRGBBitmap(0, 0, canvas.getBuffer(), W, H);
 }
 
 void drawGameOver() {
-  tft.fillScreen(COL_BG);
+  canvas.fillScreen(COL_BG);
   drawCentered("GAME",         26, 2, COL_TITLE,  true);   // 4*12=48px
   drawCentered("OVER",         48, 2, COL_TITLE,  true);   // 4*12=48px
   drawCentered("SCORE",        82, 1, COL_WHITE,  false);  // 30px
@@ -518,6 +572,7 @@ void drawGameOver() {
   drawCentered(buf,            94, 2, COL_ACCENT, true);
   drawCentered("Press button", 128, 1, COL_ACCENT, false); // 12*6=72px
   drawCentered("to play again",140, 1, COL_ACCENT, false); // 13*6=78px
+  tft.drawRGBBitmap(0, 0, canvas.getBuffer(), W, H);
 }
 
 void setup() {
@@ -558,14 +613,15 @@ void setup() {
 }
 
 void loop() {
+  updateInputs();          // update all button and click states
+  if (g_buttonDoubleClicked || g_encButtonDoubleClicked) {
+    dumpScreenshot();
+  }
+
   encoder.tick();          // MUST run every iteration
   updateSound();
 
-  // Poll the encoder button edge ONCE per loop, unconditionally, so lastEncBtn
-  // never goes stale. (If it were only read inside a guarded branch, the first
-  // read after a level clear would compare against an ancient HIGH and any
-  // line bounce would register as a phantom press — popping the screen on its
-  // own.) Consume this single value wherever an encoder press is needed.
+  // Poll the encoder button edge ONCE per loop, unconditionally.
   bool encEdge = encButtonPressed();
 
   switch (state) {
